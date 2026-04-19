@@ -1,0 +1,291 @@
+// Billr — Prisma Schema
+// All monetary values use Decimal @db.Decimal(12,4) for storage precision.
+// Amounts presented to users are Decimal @db.Decimal(12,2).
+// NEVER use Float for money.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum BillingInterval {
+  monthly
+  annual
+}
+
+enum SubscriptionStatus {
+  trialing
+  active
+  past_due
+  canceled
+  unpaid
+  paused
+}
+
+enum InvoiceStatus {
+  draft
+  open
+  paid
+  void
+  uncollectible
+}
+
+enum LineItemType {
+  subscription
+  usage
+  proration
+  credit
+  tax
+}
+
+enum DeliveryStatus {
+  pending
+  delivered
+  failed
+  dead
+}
+
+enum ActorType {
+  user
+  api_key
+  system
+  stripe
+}
+
+enum ApiKeyScope {
+  admin
+  read_only
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model Account {
+  id                 String    @id @default(uuid()) @db.Uuid
+  name               String
+  email              String    @unique
+  billing_email      String?
+  stripe_customer_id String?   @unique
+  currency           String    @default("USD") @db.Char(3)
+  timezone           String    @default("UTC")
+  metadata           Json      @default("{}")
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @updatedAt
+
+  subscriptions     Subscription[]
+  invoices          Invoice[]
+  webhookEndpoints  WebhookEndpoint[]
+  webhookDeliveries WebhookDelivery[]
+  auditLogs         AuditLog[]
+  usageRecords      UsageRecord[]
+  apiKeys           ApiKey[]
+
+  @@map("accounts")
+}
+
+model Plan {
+  id               String          @id @default(uuid()) @db.Uuid
+  name             String
+  slug             String          @unique
+  description      String?
+  billing_interval BillingInterval
+  base_price       Decimal         @db.Decimal(12, 4)
+  trial_days       Int             @default(0)
+  is_active        Boolean         @default(true)
+  stripe_price_id  String?         @unique
+  metadata         Json            @default("{}")
+  created_at       DateTime        @default(now())
+  updated_at       DateTime        @updatedAt
+
+  tiers         PlanTier[]
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model PlanTier {
+  id          String   @id @default(uuid()) @db.Uuid
+  plan_id     String   @db.Uuid
+  metric      String
+  up_to       Int?     // NULL = unlimited (last tier)
+  unit_amount Decimal  @db.Decimal(12, 4)
+  flat_amount Decimal  @default(0) @db.Decimal(12, 4)
+  created_at  DateTime @default(now())
+
+  plan Plan @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+
+  @@map("plan_tiers")
+}
+
+model Subscription {
+  id                     String             @id @default(uuid()) @db.Uuid
+  account_id             String             @db.Uuid
+  plan_id                String             @db.Uuid
+  stripe_subscription_id String?            @unique
+  status                 SubscriptionStatus
+  trial_start            DateTime?
+  trial_end              DateTime?
+  current_period_start   DateTime
+  current_period_end     DateTime
+  cancel_at_period_end   Boolean            @default(false)
+  canceled_at            DateTime?
+  ended_at               DateTime?
+  metadata               Json               @default("{}")
+  created_at             DateTime           @default(now())
+  updated_at             DateTime           @updatedAt
+
+  account      Account       @relation(fields: [account_id], references: [id], onDelete: Restrict)
+  plan         Plan          @relation(fields: [plan_id], references: [id], onDelete: Restrict)
+  invoices     Invoice[]
+  usageRecords UsageRecord[]
+
+  @@map("subscriptions")
+}
+
+model Invoice {
+  id                String        @id @default(uuid()) @db.Uuid
+  account_id        String        @db.Uuid
+  subscription_id   String?       @db.Uuid
+  stripe_invoice_id String?       @unique
+  status            InvoiceStatus @default(draft)
+  currency          String        @db.Char(3)
+  subtotal          Decimal       @default(0) @db.Decimal(12, 2)
+  tax               Decimal       @default(0) @db.Decimal(12, 2)
+  total             Decimal       @default(0) @db.Decimal(12, 2)
+  due_date          DateTime?
+  paid_at           DateTime?
+  period_start      DateTime?
+  period_end        DateTime?
+  pdf_url           String?
+  metadata          Json          @default("{}")
+  created_at        DateTime      @default(now())
+  updated_at        DateTime      @updatedAt
+
+  account      Account       @relation(fields: [account_id], references: [id], onDelete: Restrict)
+  subscription Subscription? @relation(fields: [subscription_id], references: [id], onDelete: SetNull)
+  lineItems    LineItem[]
+
+  @@map("invoices")
+}
+
+model LineItem {
+  id           String       @id @default(uuid()) @db.Uuid
+  invoice_id   String       @db.Uuid
+  description  String
+  quantity     Decimal      @default(1) @db.Decimal(12, 4)
+  unit_amount  Decimal      @db.Decimal(12, 4)
+  amount       Decimal      @db.Decimal(12, 2)
+  type         LineItemType
+  period_start DateTime?
+  period_end   DateTime?
+  metadata     Json         @default("{}")
+  created_at   DateTime     @default(now())
+
+  invoice Invoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
+
+  @@map("line_items")
+}
+
+model UsageRecord {
+  id              String   @id @default(uuid()) @db.Uuid
+  subscription_id String   @db.Uuid
+  account_id      String   @db.Uuid
+  metric          String
+  quantity        Decimal  @db.Decimal(12, 4)
+  idempotency_key String   @unique
+  source          String?
+  recorded_at     DateTime @default(now())
+  created_at      DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscription_id], references: [id], onDelete: Restrict)
+  account      Account      @relation(fields: [account_id], references: [id], onDelete: Restrict)
+
+  @@map("usage_records")
+}
+
+model WebhookEndpoint {
+  id               String   @id @default(uuid()) @db.Uuid
+  account_id       String   @db.Uuid
+  url              String
+  secret_encrypted String
+  events           String[]
+  is_active        Boolean  @default(true)
+  description      String?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  account    Account           @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@map("webhook_endpoints")
+}
+
+model WebhookDelivery {
+  id              String         @id @default(uuid()) @db.Uuid
+  endpoint_id     String         @db.Uuid
+  account_id      String         @db.Uuid
+  event_type      String
+  event_id        String         @db.Uuid
+  payload         Json
+  status          DeliveryStatus @default(pending)
+  attempt_count   Int            @default(0)
+  last_attempt_at DateTime?
+  next_attempt_at DateTime?
+  response_status Int?
+  response_body   String?
+  error_message   String?
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+
+  endpoint WebhookEndpoint @relation(fields: [endpoint_id], references: [id], onDelete: Cascade)
+  account  Account         @relation(fields: [account_id], references: [id], onDelete: Cascade)
+
+  @@map("webhook_deliveries")
+}
+
+model AuditLog {
+  id            BigInt    @id @default(autoincrement())
+  account_id    String    @db.Uuid
+  actor_type    ActorType
+  actor_id      String?
+  action        String
+  resource_type String
+  resource_id   String?   @db.Uuid
+  before_state  Json?
+  after_state   Json?
+  ip_address    String?
+  user_agent    String?
+  created_at    DateTime  @default(now())
+
+  account Account @relation(fields: [account_id], references: [id], onDelete: Restrict)
+
+  @@map("audit_logs")
+}
+
+// Idempotency table for Stripe webhook deduplication (LB-001)
+model ProcessedStripeEvent {
+  stripe_event_id String   @id
+  processed_at    DateTime @default(now())
+
+  @@map("processed_stripe_events")
+}
+
+model ApiKey {
+  id          String      @id @default(uuid()) @db.Uuid
+  account_id  String      @db.Uuid
+  key_hash    String      @unique
+  key_prefix  String
+  scope       ApiKeyScope
+  description String?
+  revoked_at  DateTime?
+  created_at  DateTime    @default(now())
+
+  account Account @relation(fields: [account_id], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
+}

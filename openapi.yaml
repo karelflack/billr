@@ -1,0 +1,2291 @@
+openapi: 3.0.3
+info:
+  title: Billr API
+  description: |
+    B2B subscription billing API. Manage accounts, plans, subscriptions, usage metering,
+    invoices, and webhooks. All monetary values are integers in the smallest currency unit
+    (e.g. cents for USD). Never floats.
+
+    ## Authentication
+    All endpoints require a Bearer API key in the `Authorization` header, except
+    `GET /plans` and `GET /plans/{planId}` which are public.
+
+    ## Rate Limiting
+    Requests are rate-limited per API key. Limits are returned in response headers:
+    - `X-RateLimit-Limit` — requests allowed per window
+    - `X-RateLimit-Remaining` — requests remaining
+    - `X-RateLimit-Reset` — UTC epoch seconds when window resets
+
+    ## Pagination
+    List endpoints use cursor-based pagination. Pass `after` (a record ID) and `limit`
+    (default 20, max 100). If `next_cursor` is present in the response there are more pages.
+
+    ## Idempotency
+    POST endpoints that create resources support an `Idempotency-Key` request header.
+    Supply a unique UUID per logical operation; duplicate keys within 24 h return the
+    cached response without re-executing the operation.
+  version: 1.0.0
+  contact:
+    name: Billr Support
+    email: support@billr.io
+    url: https://docs.billr.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.billr.io/v1
+    description: Production
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Auth
+    description: API key management
+  - name: Accounts
+    description: Customer account management (GDPR data-subject endpoints included)
+  - name: Plans
+    description: Billing plan catalogue
+  - name: Subscriptions
+    description: Subscription lifecycle — create, upgrade, downgrade, cancel, trial
+  - name: Usage
+    description: Usage metering — ingest events and query summaries
+  - name: Invoices
+    description: Invoice retrieval, PDF download, and voiding
+  - name: Webhooks
+    description: Webhook endpoint management and delivery history
+  - name: Billing
+    description: Stripe-hosted checkout and customer portal sessions
+  - name: Audit
+    description: Immutable audit log for compliance and debugging
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Auth
+  # ---------------------------------------------------------------------------
+
+  /auth/keys:
+    post:
+      tags: [Auth]
+      operationId: createApiKey
+      summary: Create API key
+      description: |
+        Creates a new API key. The `key` field is only returned once in this response;
+        it cannot be retrieved afterwards. Store it securely immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateApiKeyRequest'
+            example:
+              description: "Production server key"
+              scope: admin
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateApiKeyResponse'
+              example:
+                id: key_01HX3Y9ZG2VMBPN5Q8T7RWKD
+                key: bllr_live_sk_MzQ2YjFkNzItNDc4Zi00OTY3LWI4YTUtNjY2ZWM5NjA1Zjdl
+                prefix: bllr_live_sk_MzQ2
+                scope: admin
+                created_at: "2026-04-19T10:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Auth]
+      operationId: listApiKeys
+      summary: List API keys
+      description: Returns all API keys for the authenticated workspace. Key values are never returned here — only metadata.
+      responses:
+        '200':
+          description: List of API keys
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/keys/{keyId}:
+    delete:
+      tags: [Auth]
+      operationId: deleteApiKey
+      summary: Revoke API key
+      description: Permanently revokes the API key. In-flight requests using this key will fail immediately.
+      parameters:
+        - $ref: '#/components/parameters/KeyId'
+      responses:
+        '204':
+          description: Key revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Accounts
+  # ---------------------------------------------------------------------------
+
+  /accounts:
+    post:
+      tags: [Accounts]
+      operationId: createAccount
+      summary: Create account
+      description: Creates a new customer account. `email` is used for auth; `billing_email` receives invoices (defaults to `email` if omitted).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccountRequest'
+            example:
+              name: "Acme Corp"
+              email: "admin@acme.com"
+              billing_email: "billing@acme.com"
+              currency: USD
+              timezone: "America/New_York"
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /accounts/{accountId}:
+    get:
+      tags: [Accounts]
+      operationId: getAccount
+      summary: Get account
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+      responses:
+        '200':
+          description: Account object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    patch:
+      tags: [Accounts]
+      operationId: updateAccount
+      summary: Update account
+      description: Partial update — only provided fields are modified.
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccountRequest'
+      responses:
+        '200':
+          description: Updated account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [Accounts]
+      operationId: deleteAccount
+      summary: Delete account (hard)
+      description: Immediately deletes the account and all associated data. Prefer `/accounts/{accountId}/delete` for GDPR erasure flows which queue an async deletion with audit trail.
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+      responses:
+        '204':
+          description: Account deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /accounts/{accountId}/data-export:
+    post:
+      tags: [Accounts]
+      operationId: requestDataExport
+      summary: Request GDPR data export
+      description: |
+        Queues a full data export for the account (GDPR Article 20 — data portability).
+        The export is emailed to `billing_email` within 24 hours as a JSON archive.
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+      responses:
+        '202':
+          description: Export queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message:
+                    type: string
+                    example: "Export queued, you will receive an email within 24 hours"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /accounts/{accountId}/delete:
+    post:
+      tags: [Accounts]
+      operationId: requestAccountDeletion
+      summary: Request GDPR erasure (async)
+      description: |
+        Initiates an asynchronous account deletion (GDPR Article 17 — right to erasure).
+        Data is scrubbed within 30 days. An audit record is retained as required by law.
+        Active subscriptions are cancelled immediately.
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+      responses:
+        '202':
+          description: Deletion initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message:
+                    type: string
+                    example: "Account deletion initiated"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Plans
+  # ---------------------------------------------------------------------------
+
+  /plans:
+    get:
+      tags: [Plans]
+      operationId: listPlans
+      summary: List plans
+      description: Returns all active billing plans. This endpoint is public — no authentication required.
+      security: []
+      responses:
+        '200':
+          description: Plan list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Plan'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags: [Plans]
+      operationId: createPlan
+      summary: Create plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePlanRequest'
+            example:
+              name: "Growth"
+              slug: "growth"
+              billing_interval: monthly
+              base_price: 34900
+              trial_days: 14
+              stripe_price_id: "price_1NkXXXXXXX"
+              description: "For scaling SaaS teams"
+      responses:
+        '201':
+          description: Plan created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /plans/{planId}:
+    get:
+      tags: [Plans]
+      operationId: getPlan
+      summary: Get plan
+      description: Returns a single plan. Public — no authentication required.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/PlanId'
+      responses:
+        '200':
+          description: Plan object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    patch:
+      tags: [Plans]
+      operationId: updatePlan
+      summary: Update plan
+      description: |
+        Partial update. Changing `base_price` does not affect existing subscriptions —
+        they continue at the price locked at subscription creation. Only new subscriptions
+        pick up the new price.
+      parameters:
+        - $ref: '#/components/parameters/PlanId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePlanRequest'
+      responses:
+        '200':
+          description: Updated plan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [Plans]
+      operationId: deletePlan
+      summary: Archive plan
+      description: Archives the plan so it is no longer offered to new subscribers. Existing subscriptions are not affected.
+      parameters:
+        - $ref: '#/components/parameters/PlanId'
+      responses:
+        '204':
+          description: Plan archived
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Subscriptions
+  # ---------------------------------------------------------------------------
+
+  /subscriptions:
+    post:
+      tags: [Subscriptions]
+      operationId: createSubscription
+      summary: Create subscription
+      description: |
+        Creates a subscription linking an account to a plan. If the plan has `trial_days > 0`,
+        the subscription starts in `trialing` status. A `subscription.created` webhook is fired.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSubscriptionRequest'
+            example:
+              account_id: acc_01HX3Y9ZG2VMBPN5Q8T7RWKD
+              plan_id: plan_01HX3Y9ZG2VMBPN5Q8T7RWKD
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Subscriptions]
+      operationId: listSubscriptions
+      summary: List subscriptions
+      parameters:
+        - name: account_id
+          in: query
+          schema:
+            type: string
+          description: Filter by account
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/SubscriptionStatus'
+          description: Filter by status
+        - $ref: '#/components/parameters/After'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated subscription list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Subscription'
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `after` to fetch the next page
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /subscriptions/{subId}:
+    get:
+      tags: [Subscriptions]
+      operationId: getSubscription
+      summary: Get subscription
+      parameters:
+        - $ref: '#/components/parameters/SubId'
+      responses:
+        '200':
+          description: Subscription object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /subscriptions/{subId}/upgrade:
+    post:
+      tags: [Subscriptions]
+      operationId: upgradeSubscription
+      summary: Upgrade subscription
+      description: |
+        Moves the subscription to a higher-tier plan. Prorated credit is applied immediately
+        via Stripe. A `subscription.upgraded` webhook is fired.
+      parameters:
+        - $ref: '#/components/parameters/SubId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id]
+              properties:
+                plan_id:
+                  type: string
+      responses:
+        '200':
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /subscriptions/{subId}/downgrade:
+    post:
+      tags: [Subscriptions]
+      operationId: downgradeSubscription
+      summary: Downgrade subscription
+      description: |
+        Moves the subscription to a lower-tier plan at the end of the current billing period.
+        A `subscription.downgrade_scheduled` webhook is fired immediately; `subscription.downgraded`
+        fires at effective date.
+      parameters:
+        - $ref: '#/components/parameters/SubId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id]
+              properties:
+                plan_id:
+                  type: string
+      responses:
+        '200':
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /subscriptions/{subId}/cancel:
+    post:
+      tags: [Subscriptions]
+      operationId: cancelSubscription
+      summary: Cancel subscription
+      description: |
+        Cancels the subscription. If `immediately: true`, access ends now and a prorated
+        refund credit is issued. If `immediately: false`, the subscription remains active
+        until `current_period_end`. Fires `subscription.cancelled`.
+      parameters:
+        - $ref: '#/components/parameters/SubId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [immediately]
+              properties:
+                immediately:
+                  type: boolean
+                  description: Cancel immediately vs at period end
+            example:
+              immediately: false
+      responses:
+        '200':
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /subscriptions/{subId}/reactivate:
+    post:
+      tags: [Subscriptions]
+      operationId: reactivateSubscription
+      summary: Reactivate subscription
+      description: |
+        Reactivates a subscription that is `cancelled` or `cancel_at_period_end`.
+        Only valid before the cancellation date has elapsed. Fires `subscription.reactivated`.
+      parameters:
+        - $ref: '#/components/parameters/SubId'
+      responses:
+        '200':
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /subscriptions/{subId}/usage:
+    get:
+      tags: [Subscriptions]
+      operationId: getSubscriptionUsage
+      summary: Get subscription usage summary
+      description: Returns aggregated usage totals for the current billing period, grouped by metric.
+      parameters:
+        - $ref: '#/components/parameters/SubId'
+      responses:
+        '200':
+          description: Usage summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Usage Metering
+  # ---------------------------------------------------------------------------
+
+  /usage:
+    post:
+      tags: [Usage]
+      operationId: ingestUsageRecord
+      summary: Ingest usage event
+      description: |
+        Records a metered usage event. Use `idempotency_key` (a stable UUID for this event)
+        to prevent double-counting — duplicate keys within the same billing period are silently
+        deduplicated. `recorded_at` defaults to server time if omitted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUsageRecordRequest'
+            example:
+              subscription_id: sub_01HX3Y9ZG2VMBPN5Q8T7RWKD
+              metric: api_calls
+              quantity: 150
+              idempotency_key: "evt_20260419_api_calls_batch_001"
+              source: "api-gateway"
+      responses:
+        '201':
+          description: Usage record created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Usage]
+      operationId: listUsageRecords
+      summary: List usage records
+      parameters:
+        - name: subscription_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: metric
+          in: query
+          schema:
+            type: string
+          description: Filter to a single metric name
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: ISO 8601 range start (inclusive)
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: ISO 8601 range end (exclusive)
+        - $ref: '#/components/parameters/After'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated usage records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UsageRecord'
+                  next_cursor:
+                    type: string
+                    nullable: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /usage/summary:
+    get:
+      tags: [Usage]
+      operationId: getUsageSummary
+      summary: Get usage summary
+      description: Returns per-metric totals for a subscription. Defaults to the current billing period if no date range is provided.
+      parameters:
+        - name: subscription_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Aggregated usage summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [metrics]
+                properties:
+                  metrics:
+                    type: object
+                    description: Keys are metric names; values contain totals and the period window.
+                    additionalProperties:
+                      type: object
+                      required: [total, period_start, period_end]
+                      properties:
+                        total:
+                          type: number
+                          description: Total quantity consumed this period
+                        period_start:
+                          type: string
+                          format: date-time
+                        period_end:
+                          type: string
+                          format: date-time
+              example:
+                metrics:
+                  api_calls:
+                    total: 48230
+                    period_start: "2026-04-01T00:00:00Z"
+                    period_end: "2026-04-30T23:59:59Z"
+                  active_subscriptions:
+                    total: 312
+                    period_start: "2026-04-01T00:00:00Z"
+                    period_end: "2026-04-30T23:59:59Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Invoices
+  # ---------------------------------------------------------------------------
+
+  /invoices:
+    get:
+      tags: [Invoices]
+      operationId: listInvoices
+      summary: List invoices
+      parameters:
+        - name: account_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/InvoiceStatus'
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/After'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated invoice list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Invoice'
+                  next_cursor:
+                    type: string
+                    nullable: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /invoices/{invoiceId}:
+    get:
+      tags: [Invoices]
+      operationId: getInvoice
+      summary: Get invoice
+      description: Returns the invoice with its full `line_items` array.
+      parameters:
+        - $ref: '#/components/parameters/InvoiceId'
+      responses:
+        '200':
+          description: Invoice with line items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /invoices/{invoiceId}/pdf:
+    get:
+      tags: [Invoices]
+      operationId: downloadInvoicePdf
+      summary: Download invoice PDF
+      description: Redirects (302) to a time-limited signed URL for the PDF. The URL expires after 60 minutes.
+      parameters:
+        - $ref: '#/components/parameters/InvoiceId'
+      responses:
+        '302':
+          description: Redirect to signed PDF URL
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+              description: Signed S3/CDN URL for the PDF file
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /invoices/{invoiceId}/void:
+    post:
+      tags: [Invoices]
+      operationId: voidInvoice
+      summary: Void invoice
+      description: |
+        Marks an invoice as void. Only `open` invoices can be voided. A voided invoice
+        cannot be un-voided. Fires `invoice.voided`.
+      parameters:
+        - $ref: '#/components/parameters/InvoiceId'
+      responses:
+        '200':
+          description: Voided invoice
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Webhooks
+  # ---------------------------------------------------------------------------
+
+  /webhooks:
+    post:
+      tags: [Webhooks]
+      operationId: createWebhookEndpoint
+      summary: Register webhook endpoint
+      description: |
+        Creates a new webhook endpoint. The `secret` is returned once in this response only.
+        Use it to verify `X-Billr-Signature` on incoming payloads.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookRequest'
+            example:
+              url: "https://myapp.com/webhooks/billr"
+              events:
+                - subscription.created
+                - subscription.cancelled
+                - invoice.paid
+              description: "Production billing events"
+      responses:
+        '201':
+          description: Endpoint created with one-time secret
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [endpoint, secret]
+                properties:
+                  endpoint:
+                    $ref: '#/components/schemas/WebhookEndpoint'
+                  secret:
+                    type: string
+                    description: HMAC signing secret. Shown once — store immediately.
+                    example: "whsec_4f8a2c3d1e9b7f6a..."
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Webhooks]
+      operationId: listWebhookEndpoints
+      summary: List webhook endpoints
+      responses:
+        '200':
+          description: List of endpoints (secrets omitted)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /webhooks/{endpointId}:
+    get:
+      tags: [Webhooks]
+      operationId: getWebhookEndpoint
+      summary: Get webhook endpoint
+      description: Returns the endpoint configuration. The signing secret is never returned here.
+      parameters:
+        - $ref: '#/components/parameters/EndpointId'
+      responses:
+        '200':
+          description: Webhook endpoint (secret omitted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    patch:
+      tags: [Webhooks]
+      operationId: updateWebhookEndpoint
+      summary: Update webhook endpoint
+      description: |
+        Updates endpoint configuration. Set `rotate_secret: true` to generate a new signing
+        secret — the new secret is returned in `secret` and the old one is immediately invalidated.
+      parameters:
+        - $ref: '#/components/parameters/EndpointId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebhookRequest'
+            example:
+              events:
+                - subscription.created
+                - subscription.upgraded
+                - invoice.paid
+                - invoice.voided
+              rotate_secret: false
+      responses:
+        '200':
+          description: Updated endpoint; `secret` only present when `rotate_secret` was true
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [endpoint]
+                properties:
+                  endpoint:
+                    $ref: '#/components/schemas/WebhookEndpoint'
+                  secret:
+                    type: string
+                    nullable: true
+                    description: New signing secret, only if `rotate_secret` was true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [Webhooks]
+      operationId: deleteWebhookEndpoint
+      summary: Delete webhook endpoint
+      parameters:
+        - $ref: '#/components/parameters/EndpointId'
+      responses:
+        '204':
+          description: Endpoint deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /webhooks/{endpointId}/deliveries:
+    get:
+      tags: [Webhooks]
+      operationId: listWebhookDeliveries
+      summary: List deliveries for endpoint
+      description: Returns delivery history (most recent first) for the endpoint, including failed attempts.
+      parameters:
+        - $ref: '#/components/parameters/EndpointId'
+        - $ref: '#/components/parameters/After'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Delivery history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookDelivery'
+                  next_cursor:
+                    type: string
+                    nullable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /webhooks/deliveries/{deliveryId}/replay:
+    post:
+      tags: [Webhooks]
+      operationId: replayWebhookDelivery
+      summary: Replay delivery
+      description: |
+        Re-enqueues a delivery for immediate re-attempt. Useful for debugging or recovering
+        from a period of downtime. Creates a new delivery record linked to the original event.
+      parameters:
+        - name: deliveryId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Delivery re-enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [delivery]
+                properties:
+                  delivery:
+                    $ref: '#/components/schemas/WebhookDelivery'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Billing (Stripe sessions)
+  # ---------------------------------------------------------------------------
+
+  /billing/checkout:
+    post:
+      tags: [Billing]
+      operationId: createCheckoutSession
+      summary: Create Stripe Checkout session
+      description: |
+        Creates a Stripe Checkout session for the given account and plan. Redirect the
+        customer's browser to the returned `url`. On success, Stripe calls the `success_url`
+        with `?session_id={CHECKOUT_SESSION_ID}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCheckoutRequest'
+            example:
+              account_id: acc_01HX3Y9ZG2VMBPN5Q8T7RWKD
+              plan_id: plan_01HX3Y9ZG2VMBPN5Q8T7RWKD
+              success_url: "https://app.yourproduct.com/billing/success?session_id={CHECKOUT_SESSION_ID}"
+              cancel_url: "https://app.yourproduct.com/billing/plans"
+      responses:
+        '200':
+          description: Checkout session URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                    description: Stripe Checkout URL — redirect the customer here
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /billing/portal:
+    post:
+      tags: [Billing]
+      operationId: createPortalSession
+      summary: Create Stripe Customer Portal session
+      description: |
+        Creates a Stripe Customer Portal session so the customer can self-serve their
+        payment method, view invoices, or cancel. Session URLs expire after 5 minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePortalRequest'
+            example:
+              account_id: acc_01HX3Y9ZG2VMBPN5Q8T7RWKD
+              return_url: "https://app.yourproduct.com/settings"
+      responses:
+        '200':
+          description: Portal session URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url:
+                    type: string
+                    format: uri
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ---------------------------------------------------------------------------
+  # Audit
+  # ---------------------------------------------------------------------------
+
+  /audit:
+    get:
+      tags: [Audit]
+      operationId: listAuditLogs
+      summary: List audit logs
+      description: |
+        Returns the immutable audit log. Entries are append-only and cannot be deleted.
+        Requires `admin` scope.
+      parameters:
+        - name: account_id
+          in: query
+          schema:
+            type: string
+          description: Filter by account
+        - name: action
+          in: query
+          schema:
+            type: string
+          description: Filter by action string (e.g. `subscription.cancelled`)
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/After'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated audit log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLog'
+                  next_cursor:
+                    type: string
+                    nullable: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+# =============================================================================
+# Components
+# =============================================================================
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API key obtained from POST /auth/keys. Prefix with `Bearer `.
+
+  parameters:
+    AccountId:
+      name: accountId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Account ID (prefix `acc_`)
+    PlanId:
+      name: planId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Plan ID (prefix `plan_`)
+    SubId:
+      name: subId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Subscription ID (prefix `sub_`)
+    InvoiceId:
+      name: invoiceId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Invoice ID (prefix `inv_`)
+    EndpointId:
+      name: endpointId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Webhook endpoint ID (prefix `whe_`)
+    KeyId:
+      name: keyId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: API key ID (prefix `key_`)
+    After:
+      name: after
+      in: query
+      schema:
+        type: string
+      description: Cursor for forward pagination — the `id` of the last item on the previous page
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Number of results per page
+
+  responses:
+    BadRequest:
+      description: Invalid request body or query parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: validation_error
+            message: "'billing_interval' must be one of: monthly, yearly"
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: unauthorized
+            message: "Invalid or missing Bearer token"
+    Forbidden:
+      description: API key does not have permission for this operation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: forbidden
+            message: "read_only keys cannot perform this action"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: not_found
+            message: "Account acc_01HX3Y9ZG2VMBPN5Q8T7RWKD not found"
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until the rate limit resets
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: rate_limited
+            message: "Rate limit exceeded. Retry after 30 seconds."
+    InternalServerError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: internal_error
+            message: "An unexpected error occurred. Our team has been notified."
+
+  schemas:
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code
+          example: not_found
+        message:
+          type: string
+          description: Human-readable description
+          example: "Account not found"
+
+    # -------------------------------------------------------------------------
+    # Auth
+    # -------------------------------------------------------------------------
+
+    ApiKey:
+      type: object
+      required: [id, prefix, scope, created_at]
+      properties:
+        id:
+          type: string
+          example: key_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        prefix:
+          type: string
+          description: First 16 characters of the key — safe to display
+          example: bllr_live_sk_MzQ2
+        scope:
+          $ref: '#/components/schemas/ApiKeyScope'
+        description:
+          type: string
+          nullable: true
+          example: "Production server key"
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ApiKeyScope:
+      type: string
+      enum: [admin, read_only]
+      description: "`admin` has full access. `read_only` can only perform GET requests."
+
+    CreateApiKeyRequest:
+      type: object
+      required: [scope]
+      properties:
+        description:
+          type: string
+          maxLength: 255
+        scope:
+          $ref: '#/components/schemas/ApiKeyScope'
+
+    CreateApiKeyResponse:
+      type: object
+      required: [id, key, prefix, scope, created_at]
+      properties:
+        id:
+          type: string
+        key:
+          type: string
+          description: Full API key value — shown exactly once. Store immediately.
+        prefix:
+          type: string
+        scope:
+          $ref: '#/components/schemas/ApiKeyScope'
+        created_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Accounts
+    # -------------------------------------------------------------------------
+
+    Account:
+      type: object
+      required: [id, name, email, currency, timezone, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: acc_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        name:
+          type: string
+          example: Acme Corp
+        email:
+          type: string
+          format: email
+          example: admin@acme.com
+        billing_email:
+          type: string
+          format: email
+          nullable: true
+          example: billing@acme.com
+        currency:
+          type: string
+          description: ISO 4217 currency code
+          example: USD
+        timezone:
+          type: string
+          description: IANA timezone name
+          example: America/New_York
+        stripe_customer_id:
+          type: string
+          nullable: true
+          description: Stripe customer ID — set after first checkout session
+          example: cus_NffrFeUfNV2Hib
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+          description: Arbitrary key-value pairs for your own use
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateAccountRequest:
+      type: object
+      required: [name, email]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        email:
+          type: string
+          format: email
+        billing_email:
+          type: string
+          format: email
+        currency:
+          type: string
+          default: USD
+          description: ISO 4217 code
+        timezone:
+          type: string
+          default: UTC
+          description: IANA timezone name
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    UpdateAccountRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        billing_email:
+          type: string
+          format: email
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    # -------------------------------------------------------------------------
+    # Plans
+    # -------------------------------------------------------------------------
+
+    Plan:
+      type: object
+      required: [id, name, slug, billing_interval, base_price, is_active, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: plan_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        name:
+          type: string
+          example: Growth
+        slug:
+          type: string
+          description: URL-safe identifier
+          example: growth
+        description:
+          type: string
+          nullable: true
+        billing_interval:
+          $ref: '#/components/schemas/BillingInterval'
+        base_price:
+          type: integer
+          description: Price in smallest currency unit (e.g. cents). Never a float.
+          example: 34900
+        trial_days:
+          type: integer
+          minimum: 0
+          default: 0
+          example: 14
+        stripe_price_id:
+          type: string
+          nullable: true
+          example: price_1NkXXXXXXX
+        tiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanTier'
+          description: Optional volume/tiered pricing tiers. Empty for flat-rate plans.
+        is_active:
+          type: boolean
+          description: Archived plans are not shown publicly
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PlanTier:
+      type: object
+      required: [up_to, unit_amount]
+      description: A single pricing tier for volume or graduated billing.
+      properties:
+        up_to:
+          type: integer
+          nullable: true
+          description: Inclusive upper bound for this tier. `null` means unlimited (last tier).
+          example: 10000
+        unit_amount:
+          type: integer
+          description: Price per unit in smallest currency unit within this tier
+          example: 5
+        flat_amount:
+          type: integer
+          nullable: true
+          description: Flat fee charged when this tier is entered (graduated model only)
+          example: 0
+
+    BillingInterval:
+      type: string
+      enum: [monthly, yearly]
+
+    CreatePlanRequest:
+      type: object
+      required: [name, slug, billing_interval, base_price]
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+          pattern: '^[a-z0-9-]+$'
+        billing_interval:
+          $ref: '#/components/schemas/BillingInterval'
+        base_price:
+          type: integer
+          minimum: 0
+        trial_days:
+          type: integer
+          minimum: 0
+          default: 0
+        stripe_price_id:
+          type: string
+        description:
+          type: string
+
+    UpdatePlanRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        trial_days:
+          type: integer
+          minimum: 0
+        stripe_price_id:
+          type: string
+        is_active:
+          type: boolean
+
+    # -------------------------------------------------------------------------
+    # Subscriptions
+    # -------------------------------------------------------------------------
+
+    Subscription:
+      type: object
+      required: [id, account_id, plan_id, status, current_period_start, current_period_end, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: sub_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        account_id:
+          type: string
+        plan_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/SubscriptionStatus'
+        current_period_start:
+          type: string
+          format: date-time
+        current_period_end:
+          type: string
+          format: date-time
+        trial_start:
+          type: string
+          format: date-time
+          nullable: true
+        trial_end:
+          type: string
+          format: date-time
+          nullable: true
+        cancelled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When cancel was requested
+        cancel_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Effective cancellation date (may be future for end-of-period cancellations)
+        stripe_subscription_id:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SubscriptionStatus:
+      type: string
+      enum:
+        - trialing
+        - active
+        - past_due
+        - cancel_at_period_end
+        - cancelled
+        - paused
+        - unpaid
+      description: |
+        - `trialing` — within free trial window
+        - `active` — paid and in good standing
+        - `past_due` — payment failed, retrying
+        - `cancel_at_period_end` — active until `current_period_end`, then cancelled
+        - `cancelled` — ended
+        - `paused` — billing paused (Enterprise feature)
+        - `unpaid` — final payment failure, access revoked
+
+    CreateSubscriptionRequest:
+      type: object
+      required: [account_id, plan_id]
+      properties:
+        account_id:
+          type: string
+        plan_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    UsageSummary:
+      type: object
+      required: [subscription_id, period_start, period_end, metrics]
+      properties:
+        subscription_id:
+          type: string
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        metrics:
+          type: object
+          additionalProperties:
+            type: object
+            required: [total]
+            properties:
+              total:
+                type: number
+              overage_units:
+                type: number
+                description: Units above the plan's included quantity
+              overage_amount:
+                type: integer
+                description: Overage charge in smallest currency unit
+
+    # -------------------------------------------------------------------------
+    # Usage
+    # -------------------------------------------------------------------------
+
+    UsageRecord:
+      type: object
+      required: [id, subscription_id, metric, quantity, idempotency_key, recorded_at, created_at]
+      properties:
+        id:
+          type: string
+          example: usg_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        subscription_id:
+          type: string
+        metric:
+          type: string
+          description: Metric name as defined in the plan (e.g. `api_calls`, `seats`)
+          example: api_calls
+        quantity:
+          type: number
+          description: Consumed quantity for this event
+          example: 150
+        idempotency_key:
+          type: string
+          description: Client-supplied deduplication key
+          example: evt_20260419_api_calls_batch_001
+        source:
+          type: string
+          nullable: true
+          description: Optional label for the originating system
+          example: api-gateway
+        recorded_at:
+          type: string
+          format: date-time
+          description: When the usage actually occurred (may differ from `created_at`)
+        created_at:
+          type: string
+          format: date-time
+
+    CreateUsageRecordRequest:
+      type: object
+      required: [subscription_id, metric, quantity, idempotency_key]
+      properties:
+        subscription_id:
+          type: string
+        metric:
+          type: string
+        quantity:
+          type: number
+          minimum: 0
+        idempotency_key:
+          type: string
+          maxLength: 255
+        source:
+          type: string
+          maxLength: 100
+        recorded_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Invoices
+    # -------------------------------------------------------------------------
+
+    Invoice:
+      type: object
+      required: [id, account_id, status, subtotal, tax, total, currency, period_start, period_end, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: inv_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        account_id:
+          type: string
+        subscription_id:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/InvoiceStatus'
+        subtotal:
+          type: integer
+          description: Pre-tax total in smallest currency unit
+          example: 34900
+        tax:
+          type: integer
+          description: Tax amount in smallest currency unit
+          example: 0
+        total:
+          type: integer
+          description: Final charged amount (subtotal + tax) in smallest currency unit
+          example: 34900
+        currency:
+          type: string
+          example: USD
+        stripe_invoice_id:
+          type: string
+          nullable: true
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        voided_at:
+          type: string
+          format: date-time
+          nullable: true
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        line_items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LineItem'
+          description: Present when fetching a single invoice; omitted in list responses
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    InvoiceStatus:
+      type: string
+      enum: [draft, open, paid, void, uncollectible]
+      description: |
+        - `draft` — not yet finalized
+        - `open` — finalized, awaiting payment
+        - `paid` — collected
+        - `void` — cancelled before collection
+        - `uncollectible` — written off
+
+    LineItem:
+      type: object
+      required: [id, description, amount, quantity, unit_amount, currency]
+      properties:
+        id:
+          type: string
+          example: li_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        description:
+          type: string
+          example: "Growth plan — April 2026"
+        type:
+          type: string
+          enum: [subscription, usage, proration, credit, tax]
+        amount:
+          type: integer
+          description: Line total in smallest currency unit (quantity × unit_amount)
+          example: 34900
+        quantity:
+          type: number
+          example: 1
+        unit_amount:
+          type: integer
+          example: 34900
+        currency:
+          type: string
+          example: USD
+        period_start:
+          type: string
+          format: date-time
+          nullable: true
+        period_end:
+          type: string
+          format: date-time
+          nullable: true
+        metric:
+          type: string
+          nullable: true
+          description: For usage line items — the metered metric name
+
+    # -------------------------------------------------------------------------
+    # Webhooks
+    # -------------------------------------------------------------------------
+
+    WebhookEndpoint:
+      type: object
+      required: [id, url, events, is_active, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: whe_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        url:
+          type: string
+          format: uri
+          example: https://myapp.com/webhooks/billr
+        events:
+          type: array
+          items:
+            type: string
+          description: Event types this endpoint subscribes to. `*` means all events.
+          example:
+            - subscription.created
+            - subscription.cancelled
+            - invoice.paid
+        description:
+          type: string
+          nullable: true
+        is_active:
+          type: boolean
+          default: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    WebhookDelivery:
+      type: object
+      required: [id, endpoint_id, event, status, attempt_count, created_at]
+      properties:
+        id:
+          type: string
+          example: whd_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        endpoint_id:
+          type: string
+        event:
+          type: string
+          description: Event type that triggered this delivery
+          example: subscription.created
+        event_id:
+          type: string
+          description: ID of the originating event record
+        payload:
+          type: object
+          description: The exact JSON body sent to the endpoint
+        status:
+          type: string
+          enum: [pending, delivered, failed, dead]
+          description: |
+            - `pending` — queued or in-flight
+            - `delivered` — received 2xx
+            - `failed` — received non-2xx or timed out, will retry
+            - `dead` — exhausted all retries (6 attempts)
+        response_status:
+          type: integer
+          nullable: true
+          description: HTTP status code from the endpoint's last response
+          example: 200
+        error_message:
+          type: string
+          nullable: true
+          description: Error detail for failed/dead deliveries
+        attempt_count:
+          type: integer
+          minimum: 0
+          example: 1
+        last_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Scheduled time for the next retry, if applicable
+        created_at:
+          type: string
+          format: date-time
+
+    CreateWebhookRequest:
+      type: object
+      required: [url, events]
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          example:
+            - subscription.created
+            - invoice.paid
+        description:
+          type: string
+          maxLength: 255
+
+    UpdateWebhookRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        is_active:
+          type: boolean
+        description:
+          type: string
+          maxLength: 255
+        rotate_secret:
+          type: boolean
+          default: false
+          description: If true, invalidates the current signing secret and generates a new one
+
+    # -------------------------------------------------------------------------
+    # Billing sessions
+    # -------------------------------------------------------------------------
+
+    CreateCheckoutRequest:
+      type: object
+      required: [account_id, plan_id, success_url, cancel_url]
+      properties:
+        account_id:
+          type: string
+        plan_id:
+          type: string
+        success_url:
+          type: string
+          format: uri
+          description: Must contain `{CHECKOUT_SESSION_ID}` placeholder for Stripe to inject the session ID
+        cancel_url:
+          type: string
+          format: uri
+
+    CreatePortalRequest:
+      type: object
+      required: [account_id, return_url]
+      properties:
+        account_id:
+          type: string
+        return_url:
+          type: string
+          format: uri
+
+    # -------------------------------------------------------------------------
+    # Audit
+    # -------------------------------------------------------------------------
+
+    AuditLog:
+      type: object
+      required: [id, action, actor_type, created_at]
+      properties:
+        id:
+          type: string
+          example: aud_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        action:
+          type: string
+          description: Dot-namespaced action string
+          example: subscription.cancelled
+        actor_type:
+          type: string
+          enum: [api_key, user, system]
+          description: What initiated the action
+        actor_id:
+          type: string
+          nullable: true
+          description: ID of the actor (key ID, user ID, or null for system)
+        account_id:
+          type: string
+          nullable: true
+          description: Affected account, if applicable
+        resource_type:
+          type: string
+          nullable: true
+          example: subscription
+        resource_id:
+          type: string
+          nullable: true
+          example: sub_01HX3Y9ZG2VMBPN5Q8T7RWKD
+        metadata:
+          type: object
+          nullable: true
+          description: Contextual data captured at the time of the action (e.g. plan before/after)
+        ip_address:
+          type: string
+          nullable: true
+          description: Requester IP (masked for GDPR compliance after 90 days)
+        created_at:
+          type: string
+          format: date-time
